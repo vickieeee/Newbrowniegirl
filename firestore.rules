@@ -1,0 +1,155 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'preethipreethu712@gmail.com' ||
+        request.auth.token.email == 'vigneshsivan2001@gmail.com' ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+        request.auth.uid != null
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Health check / test connection
+    match /test/connection {
+      allow read: if true;
+    }
+
+    // Global Website Settings (General contact info, social handles, images, achievements)
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Brownie Menu Items
+    match /menu_items/{itemId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Custom Showcase Brownie Items
+    match /custom_items/{itemId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Baking Classes & Times
+    match /baking_classes/{classId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isOwner(userId) &&
+        incoming().uid == userId &&
+        incoming().email == request.auth.token.email &&
+        incoming().keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'role', 'createdAt', 'favorites']) &&
+        incoming().keys().hasAll(['uid', 'email']) &&
+        (incoming().role == 'customer' || (incoming().role == 'admin' && isAdmin())) &&
+        (!('displayName' in incoming()) || (incoming().displayName is string && incoming().displayName.size() <= 100)) &&
+        (!('photoURL' in incoming()) || (incoming().photoURL is string && incoming().photoURL.size() <= 500));
+
+      allow update: if (isOwner(userId) || isAdmin()) &&
+        incoming().uid == existing().uid &&
+        incoming().email == existing().email &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'favorites', 'role']) &&
+        (incoming().role == existing().role || isAdmin());
+
+      allow delete: if isAdmin();
+    }
+
+    // Class Registrations Collection
+    match /class_registrations/{registrationId} {
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow create: if isSignedIn() &&
+        isValidId(registrationId) &&
+        incoming().userId == request.auth.uid &&
+        incoming().keys().hasOnly(['userId', 'userEmail', 'userName', 'className', 'preferredDate', 'notes', 'status', 'createdAt']) &&
+        incoming().keys().hasAll(['userId', 'userEmail', 'className', 'status', 'createdAt']) &&
+        incoming().className is string && incoming().className.size() <= 150 &&
+        incoming().status in ['registered', 'waitlist', 'cancelled'];
+
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (existing().userId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'notes']))
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // Inquiries Collection
+    match /inquiries/{inquiryId} {
+      allow read: if (isSignedIn() && resource.data.userId == request.auth.uid) || isAdmin();
+      allow list: if (isSignedIn() && resource.data.userId == request.auth.uid) || isAdmin();
+
+      allow create: if isValidId(inquiryId) &&
+        incoming().keys().hasOnly(['userId', 'userEmail', 'userName', 'userPhone', 'subject', 'message', 'status', 'createdAt', 'isRead', 'readAt']) &&
+        incoming().keys().hasAll(['userId', 'userEmail', 'subject', 'message', 'status', 'createdAt']) &&
+        incoming().subject is string && incoming().subject.size() <= 300 &&
+        incoming().message is string && incoming().message.size() <= 4000 &&
+        incoming().status in ['new', 'read', 'replied', 'closed'];
+
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Orders Collection (Order Status Tracker & Bakery Deliveries)
+    match /orders/{orderId} {
+      // Allow single document get by orderId so customers can track their delivery status
+      allow get: if isValidId(orderId);
+      // List orders only for the order owner or bakery admin
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow create: if (isAdmin() || isSignedIn()) &&
+        isValidId(orderId) &&
+        incoming().keys().hasOnly([
+          'id', 'orderId', 'userId', 'customerName', 'customerEmail', 'customerPhone',
+          'items', 'totalAmount', 'status', 'statusMessage', 'estimatedDelivery',
+          'deliveryAddress', 'driverName', 'driverPhone', 'createdAt', 'updatedAt',
+          'specialInstructions'
+        ]) &&
+        incoming().keys().hasAll(['orderId', 'status', 'createdAt']) &&
+        incoming().status in ['received', 'baking', 'finishing', 'out_for_delivery', 'delivered', 'cancelled'];
+
+      allow update: if isAdmin() || (
+        isSignedIn() && existing().userId == request.auth.uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['specialInstructions', 'customerPhone'])
+      );
+
+      allow delete: if isAdmin();
+    }
+  }
+}
